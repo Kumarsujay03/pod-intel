@@ -142,7 +142,7 @@ RULES:
                         "content": (
                             "You are an expert analyst specializing in podcasts and "
                             "long-form content. Provide deep, structured analysis. "
-                            "Always respond in valid JSON only."
+                            "Always respond in valid JSON only. No markdown, no explanation."
                         ),
                     },
                     {"role": "user", "content": prompt},
@@ -153,7 +153,17 @@ RULES:
 
             result_text = response.choices[0].message.content.strip()
             result_text = self._extract_json(result_text)
-            data = json.loads(result_text)
+
+            # Try parsing, with fallback repair
+            try:
+                data = json.loads(result_text)
+            except json.JSONDecodeError:
+                # Aggressive repair: fix broken strings by removing internal newlines
+                import re
+                repaired = re.sub(r'"\s*\n\s*', '" ', result_text)
+                repaired = re.sub(r'\n\s*"', ' "', repaired)
+                repaired = re.sub(r',\s*,', ',', repaired)
+                data = json.loads(repaired)
 
             analysis = NvidiaAnalysis(
                 detailed_summary=data.get("detailed_summary", ""),
@@ -181,7 +191,7 @@ RULES:
             raise
 
     def _extract_json(self, text: str) -> str:
-        """Extract JSON from response."""
+        """Extract and fix JSON from response."""
         if "```json" in text:
             text = text.split("```json")[1].split("```")[0]
         elif "```" in text:
@@ -192,7 +202,16 @@ RULES:
         if start != -1 and end > start:
             text = text[start:end]
 
-        return text.strip()
+        text = text.strip()
+
+        # Fix common LLM JSON issues
+        import re
+        # Remove trailing commas before } or ]
+        text = re.sub(r',\s*([}\]])', r'\1', text)
+        # Fix unescaped newlines inside string values
+        text = re.sub(r'(?<=": ")(.*?)(?=")', lambda m: m.group(0).replace('\n', ' '), text)
+
+        return text
 
     def health_check(self) -> bool:
         """Verify NVIDIA API connectivity."""

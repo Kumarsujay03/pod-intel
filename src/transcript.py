@@ -106,13 +106,22 @@ class TranscriptExtractor:
             logger.error(f"Transcript error for {video.video_id}: {e}")
             return None
 
+    def _safe_channel_dir(self, channel_name: str) -> Path:
+        """Create a filesystem-safe directory name from channel name."""
+        import re
+        safe = channel_name.lower()
+        safe = re.sub(r'[\\/:*?"<>|()]+', '', safe)  # Remove invalid path chars
+        safe = safe.replace(" ", "_")
+        safe = re.sub(r'_+', '_', safe).strip('_')  # Collapse multiple underscores
+        return self.transcripts_dir / safe
+
     def save_transcript(self, video: VideoMetadata, transcript: TranscriptData) -> str:
         """
         Save transcript to a local file.
         Returns the file path (this goes into Google Sheets, not the text).
         """
-        channel_dir = self.transcripts_dir / video.channel_name.lower().replace(" ", "_")
-        channel_dir.mkdir(exist_ok=True)
+        channel_dir = self._safe_channel_dir(video.channel_name)
+        channel_dir.mkdir(parents=True, exist_ok=True)
 
         # Save as plain text (for reading) + JSON metadata
         txt_path = channel_dir / f"{video.video_id}.txt"
@@ -147,7 +156,7 @@ class TranscriptExtractor:
 
     def load_transcript(self, video_id: str, channel_name: str) -> Optional[TranscriptData]:
         """Load a previously saved transcript from file."""
-        channel_dir = self.transcripts_dir / channel_name.lower().replace(" ", "_")
+        channel_dir = self._safe_channel_dir(channel_name)
         txt_path = channel_dir / f"{video_id}.txt"
 
         if not txt_path.exists():
@@ -185,7 +194,7 @@ class TranscriptExtractor:
 
     def has_transcript(self, video_id: str, channel_name: str) -> bool:
         """Check if transcript already exists locally."""
-        channel_dir = self.transcripts_dir / channel_name.lower().replace(" ", "_")
+        channel_dir = self._safe_channel_dir(channel_name)
         return (channel_dir / f"{video_id}.txt").exists()
 
     def _clean_text(self, text: str) -> str:
