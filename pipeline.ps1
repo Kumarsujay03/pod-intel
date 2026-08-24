@@ -13,14 +13,18 @@ function Ensure-Venv {
 
     if (-not (Test-Path $venvPath)) {
         Write-Host ""
-        Write-Host "  Creating virtual environment (.venv)..." -ForegroundColor Cyan
+        $frames = @("⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏")
+        for ($i = 0; $i -lt 10; $i++) {
+            Write-Host "`r  $($frames[$i]) Creating virtual environment..." -NoNewline -ForegroundColor Cyan
+            Start-Sleep -Milliseconds 100
+        }
         python -m venv $venvPath
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "  [FAIL] Could not create virtual environment." -ForegroundColor Red
+            Write-Host "`r  [FAIL] Could not create virtual environment.       " -ForegroundColor Red
             Write-Host "  Make sure Python 3.10+ is installed." -ForegroundColor Red
             exit 1
         }
-        Write-Host "  [OK] Virtual environment created" -ForegroundColor Green
+        Write-Host "`r  [OK] Virtual environment created (.venv)            " -ForegroundColor Green
     }
 
     # Activate if not already active
@@ -141,9 +145,9 @@ Ensure-Ollama
 function Write-Header {
     param([string]$text)
     Write-Host ""
-    Write-Host "----------------------------------------------------" -ForegroundColor Cyan
-    Write-Host "  $text" -ForegroundColor Cyan
-    Write-Host "----------------------------------------------------" -ForegroundColor Cyan
+    Write-Host "  ╔══════════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "  ║  $($text.PadRight(48))║" -ForegroundColor Cyan
+    Write-Host "  ╚══════════════════════════════════════════════════╝" -ForegroundColor Cyan
     Write-Host ""
 }
 
@@ -276,24 +280,26 @@ function Ensure-Env {
 }
 
 function Show-Menu {
-    Write-Header "YouTube Knowledge Pipeline"
-    Write-Host "  --- SETUP ---" -ForegroundColor DarkGray
-    Write-Host "  [1] Setup     Install packages, configure keys, check Ollama"
-    Write-Host "  [2] Resolve   Fetch channel IDs from YouTube handles"
-    Write-Host "  [3] Health    Check all services and config"
     Write-Host ""
-    Write-Host "  --- RUN ---" -ForegroundColor DarkGray
-    Write-Host "  [4] Test      Process 3 videos, no Sheets push (dry run)"
-    Write-Host "  [5] Fast      Run Ollama only (skip NVIDIA, free and local)"
-    Write-Host "  [6] Full      Run full pipeline (Ollama + NVIDIA + Sheets)"
+    Write-Host "  ╔══════════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "  ║       YouTube Knowledge Pipeline                ║" -ForegroundColor Cyan
+    Write-Host "  ╚══════════════════════════════════════════════════╝" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "  --- TARGETED ---" -ForegroundColor DarkGray
-    Write-Host "  [7] Single    Process one specific channel"
-    Write-Host "  [8] Recent    Process videos from last 30 days only"
-    Write-Host ""
-    Write-Host "  --- INFO ---" -ForegroundColor DarkGray
-    Write-Host "  [9] Channels  List configured channels"
-    Write-Host "  [0] Exit"
+    Write-Host "  ┌─ SETUP ────────────────────────────────────────┐" -ForegroundColor DarkGray
+    Write-Host "  │  [1] Setup     Install packages, configure keys│" -ForegroundColor White
+    Write-Host "  │  [2] Resolve   Fetch channel IDs from handles  │" -ForegroundColor White
+    Write-Host "  │  [3] Health    Check all services and config    │" -ForegroundColor White
+    Write-Host "  ├─ RUN ──────────────────────────────────────────┤" -ForegroundColor DarkGray
+    Write-Host "  │  [4] Test      Dry run (3 videos, no Sheets)   │" -ForegroundColor White
+    Write-Host "  │  [5] Fast      Ollama only (free and local)    │" -ForegroundColor White
+    Write-Host "  │  [6] Full      Full pipeline (all services)    │" -ForegroundColor White
+    Write-Host "  ├─ TARGETED ─────────────────────────────────────┤" -ForegroundColor DarkGray
+    Write-Host "  │  [7] Single    Process one specific channel    │" -ForegroundColor White
+    Write-Host "  │  [8] Recent    Last 30 days only               │" -ForegroundColor White
+    Write-Host "  ├─ INFO ─────────────────────────────────────────┤" -ForegroundColor DarkGray
+    Write-Host "  │  [9] Channels  List configured channels        │" -ForegroundColor White
+    Write-Host "  │  [0] Exit                                      │" -ForegroundColor DarkGray
+    Write-Host "  └────────────────────────────────────────────────┘" -ForegroundColor DarkGray
     Write-Host ""
 }
 
@@ -307,12 +313,33 @@ function Run-Setup {
 
     Write-Step "2/5" "Installing packages (into .venv)"
     $reqFile = Join-Path $projectRoot "requirements.txt"
-    & $venvPython -m pip install -r $reqFile --quiet 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-        $count = (Get-Content $reqFile | Where-Object { $_ -and ($_ -notmatch "^#") }).Count
-        Write-Ok "$count packages installed"
+    $pkgs = (Get-Content $reqFile | Where-Object { $_ -and ($_ -notmatch "^#") })
+    $total = $pkgs.Count
+    $frames = @("⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏")
+    $frameIdx = 0
+
+    # Show animated spinner during install
+    $job = Start-Job -ScriptBlock {
+        param($python, $req)
+        & $python -m pip install -r $req --quiet 2>&1
+    } -ArgumentList $venvPython, $reqFile
+
+    while ($job.State -eq "Running") {
+        $frame = $frames[$frameIdx % $frames.Count]
+        Write-Host "`r  $frame Installing $total packages...          " -NoNewline -ForegroundColor Cyan
+        $frameIdx++
+        Start-Sleep -Milliseconds 120
+    }
+
+    $result = Receive-Job $job
+    Remove-Job $job
+    Write-Host "`r                                                      " -NoNewline
+    Write-Host "`r" -NoNewline
+
+    if ($job.State -ne "Failed") {
+        Write-Ok "$total packages installed"
     } else {
-        Write-Fail "Some packages failed to install. Run manually: .venv\Scripts\pip install -r requirements.txt"
+        Write-Fail "Some packages failed. Run: .venv\Scripts\pip install -r requirements.txt"
     }
 
     Write-Step "3/5" "Configuring environment"
@@ -358,7 +385,7 @@ function Run-Fast {
 function Run-Test {
     Write-Header "Test Run (3 videos, no Sheets)"
     Ensure-Env
-    & $venvPython -m src.main --skip-nvidia --skip-sheets --max-videos 3
+    & $venvPython -m src.main --skip-sheets --max-videos 3
 }
 
 function Run-Resolve {

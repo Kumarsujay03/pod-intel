@@ -1,12 +1,13 @@
 channels:
 - name: Raj Shamani
   channel_handle: '@rajshamani'
-  channel_id: UCbMGBIayK26L4VaKbwYXSew
+  channel_id: UCzwCEE_PchiBULMnAJqhGVg
   enabled: true
-  fo_prefix: RS
+  fo_prefix: FO
   max_videos: 0
   since_date: ''
   filter_shorts: true
+  min_duration_minutes: 15
 - name: Nikhil Kamath (WTF / People by WTF)
   channel_handle: '@nikhil.kamath'
   channel_id: UCnC8SAZzQiBGYVSKZ_S3y4Q

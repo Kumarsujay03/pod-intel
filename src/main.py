@@ -1,8 +1,7 @@
 """
 Main Pipeline — YouTube Knowledge Extraction.
 
-The exact 13-step pipeline from scale.md:
-
+13-step pipeline with rich terminal animations:
   1. Check YouTube channel
   2. Find new episodes
   3. Add new rows to Google Sheets
@@ -16,19 +15,35 @@ The exact 13-step pipeline from scale.md:
   11. Deep-analyze them
   12. Update Google Sheets
   13. Mark processing complete
-
-Then when a new episode appears, you only need to run the pipeline again.
 """
 
+import json
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
 from loguru import logger
 from rich.console import Console
+from rich.live import Live
+from rich.panel import Panel
+from rich.progress import (
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    BarColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+    MofNCompleteColumn,
+)
 from rich.table import Table
+from rich.text import Text
+from rich.columns import Columns
+from rich.rule import Rule
+from rich.spinner import Spinner
+from rich.status import Status
 
 from src.models import ChannelConfig, VideoMetadata, Episode
 from src.youtube import YouTubeCollector
@@ -41,6 +56,78 @@ from src.sheets import SheetsManager
 load_dotenv()
 console = Console()
 
+# Timing benchmarks file
+BENCHMARKS_FILE = Path("data/processed/timing_benchmarks.json")
+
+
+# ─── Timing Benchmarks ────────────────────────────────────────────────
+
+def load_benchmarks() -> dict:
+    """Load saved timing benchmarks from previous runs."""
+    if BENCHMARKS_FILE.exists():
+        import json
+        with open(BENCHMARKS_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def save_benchmarks(benchmarks: dict):
+    """Save timing benchmarks for future ETA estimation."""
+    import json
+    BENCHMARKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(BENCHMARKS_FILE, "w") as f:
+        json.dump(benchmarks, f, indent=2)
+
+
+def estimate_time(benchmarks: dict, total_videos: int, skip_nvidia: bool) -> str:
+    """Estimate total pipeline time based on benchmarks."""
+    if not benchmarks:
+        return "unknown (first run)"
+
+    avg_transcript = benchmarks.get("avg_transcript_sec", 2.0)
+    avg_ollama = benchmarks.get("avg_ollama_sec", 35.0)
+    avg_nvidia = benchmarks.get("avg_nvidia_sec", 45.0)
+
+    est = total_videos * (avg_transcript + avg_ollama)
+    if not skip_nvidia:
+        est += total_videos * avg_nvidia
+
+    if est < 60:
+        return f"~{int(est)}s"
+    elif est < 3600:
+        return f"~{int(est // 60)}m {int(est % 60)}s"
+    else:
+        return f"~{int(est // 3600)}h {int((est % 3600) // 60)}m"
+
+
+# ─── Progress Bar Factories ───────────────────────────────────────────
+
+def make_step_progress() -> Progress:
+    """Progress bar for step-level tasks (transcripts, classification)."""
+    return Progress(
+        SpinnerColumn("arc", style="yellow"),
+        TextColumn("[cyan]{task.description}"),
+        BarColumn(bar_width=25, complete_style="magenta", finished_style="bold magenta"),
+        MofNCompleteColumn(),
+        TextColumn("[dim]|"),
+        TimeElapsedColumn(),
+        TextColumn("[dim]~"),
+        TimeRemainingColumn(),
+        console=console,
+    )
+
+
+def make_spinner_progress() -> Progress:
+    """Spinner-only progress for quick operations."""
+    return Progress(
+        SpinnerColumn("bouncingBall", style="green"),
+        TextColumn("[bold]{task.description}"),
+        TimeElapsedColumn(),
+        console=console,
+    )
+
+
+# ─── Config & Helpers ─────────────────────────────────────────────────
 
 def load_config() -> dict:
     """Load all YAML configuration files."""
@@ -93,6 +180,15 @@ def generate_fo_id(prefix: str, index: int) -> str:
     return f"{prefix}{index:03d}"
 
 
+def format_speed(bytes_or_items: float, unit: str = "ep") -> str:
+    """Format processing speed."""
+    if bytes_or_items < 1:
+        return f"--/{unit}"
+    return f"{bytes_or_items:.1f} {unit}/min"
+
+
+# ─── Main Pipeline ────────────────────────────────────────────────────
+
 def run_pipeline(
     channel_names: list[str] = None,
     skip_nvidia: bool = False,
@@ -100,16 +196,9 @@ def run_pipeline(
     max_videos_override: int = None,
     since_date: str = None,
 ):
-    """
-    Run the full 13-step pipeline.
-    
-    Args:
-        channel_names: Specific channel names to process (None = all enabled)
-        skip_nvidia: Skip NVIDIA deep analysis entirely
-        skip_sheets: Skip Google Sheets push (useful for testing)
-        max_videos_override: Override max_videos per channel
-        since_date: Only fetch videos after this date (ISO format)
-    """
+    """Run the full 13-step pipeline with rich animations."""
+    pipeline_start = time.time()
+
     config = load_config()
     settings = config["settings"]
     taxonomy = config["taxonomy"]
@@ -128,147 +217,172 @@ def run_pipeline(
         console.print("[red]No enabled channels found in config/channels.yaml[/red]")
         return
 
-    console.print(f"\n[bold green]{'═'*50}[/bold green]")
-    console.print(f"[bold green]  YouTube Knowledge Pipeline[/bold green]")
-    console.print(f"[bold green]{'═'*50}[/bold green]")
-    console.print(f"  Channels: {len(channels)}")
-    console.print(f"  NVIDIA: {'Disabled' if skip_nvidia else 'Enabled (threshold: ' + str(taxonomy.get('nvidia_threshold', 4.0)) + ')'}")
-    console.print(f"  Sheets: {'Disabled' if skip_sheets else 'Enabled'}")
+    # ─── Header ───────────────────────────────────────────────────────
+
+    # Load benchmarks for ETA estimation
+    benchmarks = load_benchmarks()
+
+    console.print()
+    console.print(Panel.fit(
+        "[bold white]YouTube Knowledge Pipeline[/bold white]\n"
+        f"[dim]Channels: {len(channels)} | "
+        f"NVIDIA: {'[red]OFF[/red]' if skip_nvidia else '[green]ON[/green]'} | "
+        f"Sheets: {'[red]OFF[/red]' if skip_sheets else '[green]ON[/green]'}[/dim]",
+        border_style="bright_cyan",
+        padding=(1, 3),
+    ))
+
+    if benchmarks:
+        console.print(
+            f"  [dim]ETA based on previous runs: "
+            f"Transcript ~{benchmarks.get('avg_transcript_sec', 0):.1f}s/ep | "
+            f"Ollama ~{benchmarks.get('avg_ollama_sec', 0):.1f}s/ep | "
+            f"NVIDIA ~{benchmarks.get('avg_nvidia_sec', 0):.1f}s/ep[/dim]"
+        )
     console.print()
 
-    # ─── Initialize Components ────────────────────────────────────────
+    # ─── Initialize Components (with spinner) ─────────────────────────
 
-    try:
-        # YouTube collector
-        youtube = YouTubeCollector()
+    with console.status("[bold cyan]Initializing pipeline components...", spinner="dots2") as status:
+        try:
+            status.update("[bold cyan]Connecting to YouTube API...")
+            youtube = YouTubeCollector()
+            time.sleep(0.3)
 
-        # Transcript extractor
-        transcript_extractor = TranscriptExtractor(
-            preferred_languages=settings["transcript"]["preferred_languages"],
-            fallback_to_auto=settings["transcript"]["fallback_to_auto"],
-            chunk_size=settings["transcript"]["chunk_size"],
-        )
+            status.update("[bold cyan]Setting up transcript extractor...")
+            transcript_extractor = TranscriptExtractor(
+                preferred_languages=settings["transcript"]["preferred_languages"],
+                fallback_to_auto=settings["transcript"]["fallback_to_auto"],
+                chunk_size=settings["transcript"]["chunk_size"],
+            )
+            time.sleep(0.2)
 
-        # Ollama (always needed)
-        ollama = OllamaClassifier(
-            model=settings["ollama"]["model"],
-            base_url=settings["ollama"]["base_url"],
-            temperature=settings["ollama"]["temperature"],
-            categories=taxonomy.get("categories", []),
-            profile=taxonomy.get("profile", {}),
-        )
+            status.update("[bold cyan]Loading Ollama model...")
+            ollama = OllamaClassifier(
+                model=settings["ollama"]["model"],
+                base_url=settings["ollama"]["base_url"],
+                temperature=settings["ollama"]["temperature"],
+                categories=taxonomy.get("categories", []),
+                profile=taxonomy.get("profile", {}),
+            )
+            time.sleep(0.2)
 
-        # NVIDIA (optional)
-        nvidia = None
-        if not skip_nvidia:
-            try:
-                nvidia = NvidiaAnalyzer(
-                    model=settings["nvidia"]["model"],
-                    base_url=settings["nvidia"]["base_url"],
-                    temperature=settings["nvidia"]["temperature"],
-                    max_tokens=settings["nvidia"]["max_tokens"],
-                )
-            except ValueError as e:
-                console.print(f"  [yellow]NVIDIA skipped: {e}[/yellow]")
+            nvidia = None
+            if not skip_nvidia:
+                status.update("[bold cyan]Connecting to NVIDIA API...")
+                try:
+                    nvidia = NvidiaAnalyzer(
+                        model=settings["nvidia"]["model"],
+                        base_url=settings["nvidia"]["base_url"],
+                        temperature=settings["nvidia"]["temperature"],
+                        max_tokens=settings["nvidia"]["max_tokens"],
+                    )
+                except ValueError as e:
+                    console.print(f"  [yellow]⚠ NVIDIA: {e}[/yellow]")
+                    skip_nvidia = True
+
+            router = ProcessingRouter(
+                ollama=ollama,
+                nvidia=nvidia,
+                nvidia_threshold=taxonomy.get("nvidia_threshold", 4.0),
+                delay_between_requests=settings["processing"]["delay_between_requests"],
+            )
+
+            sheets = None
+            if not skip_sheets:
+                status.update("[bold cyan]Authenticating Google Sheets...")
+                try:
+                    sheets = SheetsManager()
+                    sheets.setup_all_sheets(
+                        categories=taxonomy.get("categories", []),
+                        profile=taxonomy.get("profile", {}),
+                    )
+                except (ValueError, Exception) as e:
+                    console.print(f"  [yellow]⚠ Sheets: {e}[/yellow]")
+                    skip_sheets = True
+
+        except Exception as e:
+            console.print(f"[red]Initialization failed: {e}[/red]")
+            return
+
+    console.print("  [green]✓[/green] All components initialized")
+    console.print()
+
+    # ─── Health Checks (animated) ─────────────────────────────────────
+
+    with console.status("[bold]Running health checks...", spinner="point") as status:
+        status.update("[bold]Checking Ollama...")
+        if not ollama.health_check():
+            console.print("  [red]✗ Ollama not available[/red]")
+            console.print(f"    Run: ollama pull {settings['ollama']['model']}")
+            return
+        console.print("  [green]✓[/green] Ollama [dim]({model})[/dim]".format(
+            model=settings['ollama']['model']
+        ))
+
+        if nvidia and not skip_nvidia:
+            status.update("[bold]Checking NVIDIA API...")
+            if nvidia.health_check():
+                console.print("  [green]✓[/green] NVIDIA API [dim]({model})[/dim]".format(
+                    model=settings['nvidia']['model']
+                ))
+            else:
+                console.print("  [yellow]✗[/yellow] NVIDIA [dim](skipping deep analysis)[/dim]")
                 skip_nvidia = True
 
-        # Processing router
-        router = ProcessingRouter(
-            ollama=ollama,
-            nvidia=nvidia,
-            nvidia_threshold=taxonomy.get("nvidia_threshold", 4.0),
-            delay_between_requests=settings["processing"]["delay_between_requests"],
-        )
-
-        # Google Sheets
-        sheets = None
-        if not skip_sheets:
-            try:
-                sheets = SheetsManager()
-                # Initialize all 3 sheets
-                sheets.setup_all_sheets(
-                    categories=taxonomy.get("categories", []),
-                    profile=taxonomy.get("profile", {}),
-                )
-            except (ValueError, Exception) as e:
-                console.print(f"  [yellow]Sheets skipped: {e}[/yellow]")
+        if sheets:
+            status.update("[bold]Checking Google Sheets...")
+            if sheets.health_check():
+                console.print("  [green]✓[/green] Google Sheets")
+            else:
+                console.print("  [yellow]✗[/yellow] Sheets [dim](skipping push)[/dim]")
                 skip_sheets = True
-
-    except Exception as e:
-        console.print(f"[red]Initialization failed: {e}[/red]")
-        return
-
-    # ─── Health Checks ────────────────────────────────────────────────
-
-    console.print("[bold]Health Checks:[/bold]")
-    if not ollama.health_check():
-        console.print("  [red]✗ Ollama not available[/red]")
-        console.print(f"    Run: ollama pull {settings['ollama']['model']}")
-        return
-    console.print("  [green]✓ Ollama[/green]")
-
-    if nvidia and not skip_nvidia:
-        if nvidia.health_check():
-            console.print("  [green]✓ NVIDIA API[/green]")
-        else:
-            console.print("  [yellow]✗ NVIDIA (skipping deep analysis)[/yellow]")
-            skip_nvidia = True
-
-    if sheets:
-        if sheets.health_check():
-            console.print("  [green]✓ Google Sheets[/green]")
-        else:
-            console.print("  [yellow]✗ Google Sheets (skipping push)[/yellow]")
-            skip_sheets = True
 
     console.print()
 
-    # ─── Process Each Channel (13 Steps) ──────────────────────────────
+    # ─── Process Each Channel ─────────────────────────────────────────
 
     all_episodes: list[Episode] = []
+    all_transcript_times: list[float] = []
+    all_ollama_times: list[float] = []
+    all_nvidia_times: list[float] = []
 
-    for channel in channels:
-        console.print(f"[bold cyan]{'─'*50}[/bold cyan]")
-        console.print(f"[bold cyan]  Channel: {channel.name}[/bold cyan]")
-        console.print(f"[bold cyan]{'─'*50}[/bold cyan]")
+    for ch_idx, channel in enumerate(channels):
+        console.print()
+        console.print(Rule(
+            f"[bold cyan]{channel.name}[/bold cyan] [dim]({ch_idx+1}/{len(channels)})[/dim]",
+            style="cyan",
+        ))
 
-        # Step 1: Check YouTube channel
-        console.print("  [1/13] Checking channel...")
-
-        # Step 2: Find new episodes
-        console.print("  [2/13] Finding new episodes...")
-        max_vids = max_videos_override or channel.max_videos
-        # Use CLI since_date override, or per-channel since_date from config
-        effective_since = since_date
-        if not effective_since and channel.since_date:
-            effective_since = f"{channel.since_date}T00:00:00Z"
-        videos = youtube.get_channel_videos(
-            channel, since_date=effective_since, max_results=max_vids
-        )
+        # Step 1-2: Find videos
+        with console.status("[cyan]Searching for videos...", spinner="dots"):
+            max_vids = max_videos_override or channel.max_videos
+            effective_since = since_date
+            if not effective_since and channel.since_date:
+                effective_since = f"{channel.since_date}T00:00:00Z"
+            videos = youtube.get_channel_videos(
+                channel, since_date=effective_since, max_results=max_vids
+            )
 
         if not videos:
-            console.print("  No videos found. Skipping.")
+            console.print("  [dim]No videos found. Skipping.[/dim]")
             continue
 
-        # Step 3: Check against existing (skip already processed)
+        # Check existing
         if sheets and settings["processing"]["skip_already_processed"]:
             existing_urls = sheets.get_existing_urls()
             videos = [v for v in videos if v.url not in existing_urls]
             if not videos:
-                console.print("  All episodes already processed. Skipping.")
+                console.print("  [dim]All episodes already processed.[/dim]")
                 continue
 
-        console.print(f"  [3/13] {len(videos)} new episodes to process")
+        console.print(f"  [green]Found {len(videos)} new episodes[/green]")
 
-        # Step 4: Download metadata (already done by collector)
-        console.print("  [4/13] Metadata collected ✓")
-
-        # Save raw data backup
+        # Save raw data
         youtube.save_raw_data(channel.name, videos)
 
-        # Create Episode objects with FO_IDs
+        # Create Episode objects
         existing_ids = sheets.get_existing_fo_ids() if sheets else set()
-        # Count existing episodes for this channel prefix
         prefix = channel.fo_prefix
         existing_count = sum(1 for fid in existing_ids if fid.startswith(prefix))
 
@@ -280,68 +394,218 @@ def run_pipeline(
             episodes.append(episode)
             videos_dict[video.video_id] = video
 
-        # Step 5: Obtain transcripts
-        console.print(f"  [5/13] Fetching transcripts...")
+        # ─── Step 5: Transcripts (progress bar) ───────────────────
+
         transcripts_dict = {}
-        for video in videos:
-            # Check if already saved locally
-            if transcript_extractor.has_transcript(video.video_id, video.channel_name):
-                transcript = transcript_extractor.load_transcript(
-                    video.video_id, video.channel_name
+        transcript_times = []
+        transcript_progress = make_step_progress()
+
+        with transcript_progress:
+            t_task = transcript_progress.add_task(
+                "Fetching transcripts", total=len(videos)
+            )
+
+            for video in videos:
+                transcript_progress.update(
+                    t_task,
+                    description=f"[cyan]Transcript: {video.title[:35]}..."
                 )
-            else:
-                transcript = transcript_extractor.get_transcript(video)
 
-            if transcript:
-                # Save to file, get path reference
-                path = transcript_extractor.save_transcript(video, transcript)
-                transcripts_dict[video.video_id] = transcript
+                t_start = time.time()
 
-                # Update episode with transcript path
-                for ep in episodes:
-                    if ep.video_id == video.video_id:
-                        ep.transcript_path = path
-                        break
+                if transcript_extractor.has_transcript(video.video_id, video.channel_name):
+                    transcript = transcript_extractor.load_transcript(
+                        video.video_id, video.channel_name
+                    )
+                else:
+                    transcript = transcript_extractor.get_transcript(video)
 
-            time.sleep(0.5)  # Be gentle with YouTube
+                if transcript:
+                    path = transcript_extractor.save_transcript(video, transcript)
+                    transcripts_dict[video.video_id] = transcript
+                    for ep in episodes:
+                        if ep.video_id == video.video_id:
+                            ep.transcript_path = path
+                            break
 
+                transcript_times.append(time.time() - t_start)
+                transcript_progress.advance(t_task)
+                time.sleep(0.3)
+
+            success_count = len(transcripts_dict)
+            total_count = len(videos)
+            color = "green" if success_count == total_count else "yellow"
+            console.print(
+                f"  [{color}]Transcripts: {success_count}/{total_count} fetched[/{color}]"
+            )
+
+        # ─── Steps 6-8: Ollama Classification (progress bar) ──────
+
+        ollama_times = []
+        ollama_progress = make_step_progress()
+
+        with ollama_progress:
+            o_task = ollama_progress.add_task(
+                "Ollama classifying", total=len(episodes)
+            )
+
+            for i, episode in enumerate(episodes):
+                if episode.ollama_status == "Done":
+                    ollama_progress.advance(o_task)
+                    continue
+
+                video = videos_dict.get(episode.video_id)
+                if not video:
+                    ollama_progress.advance(o_task)
+                    continue
+
+                ollama_progress.update(
+                    o_task,
+                    description=f"[cyan]Ollama: {episode.title[:35]}..."
+                )
+
+                o_start = time.time()
+                transcript = transcripts_dict.get(episode.video_id)
+                try:
+                    classification = ollama.classify(video, transcript)
+                    if classification:
+                        episode.apply_ollama(classification)
+                    else:
+                        episode.ollama_status = "Failed"
+                except Exception as e:
+                    episode.ollama_status = "Failed"
+                    logger.error(f"Ollama failed for {episode.title[:40]}: {e}")
+
+                ollama_times.append(time.time() - o_start)
+                ollama_progress.advance(o_task)
+                if i < len(episodes) - 1:
+                    time.sleep(settings["processing"]["delay_between_requests"])
+
+        ollama_done = sum(1 for ep in episodes if ep.ollama_status == "Done")
         console.print(
-            f"  Transcripts: {len(transcripts_dict)}/{len(videos)} fetched"
+            f"  [green]Classified: {ollama_done}/{len(episodes)} episodes[/green]"
         )
 
-        # Steps 6-8: Ollama classifies ALL episodes
-        console.print("  [6-8/13] Ollama classification (all episodes)...")
+        # ─── Steps 9-11: NVIDIA Deep Analysis ─────────────────────
 
-        # Steps 9-11: Identify important → NVIDIA deep analysis
-        console.print("  [9-11/13] Smart routing → NVIDIA for important...")
+        nvidia_times = []
+        important = [
+            ep for ep in episodes
+            if ep.ollama_status == "Done"
+            and ep.relevance >= taxonomy.get("nvidia_threshold", 4.0)
+            and ep.nvidia_status != "Done"
+        ]
 
-        # Run the full routing pipeline
-        episodes = router.full_process(episodes, videos_dict, transcripts_dict)
+        if important and nvidia and not skip_nvidia:
+            nvidia_progress = make_step_progress()
 
-        # Step 12: Update Google Sheets
+            with nvidia_progress:
+                n_task = nvidia_progress.add_task(
+                    "NVIDIA deep analysis", total=len(important)
+                )
+
+                for i, episode in enumerate(important):
+                    nvidia_progress.update(
+                        n_task,
+                        description=f"[cyan]NVIDIA: {episode.title[:35]}..."
+                    )
+
+                    video = videos_dict.get(episode.video_id)
+                    transcript = transcripts_dict.get(episode.video_id)
+
+                    if not video or not transcript:
+                        episode.nvidia_status = "Skipped"
+                        nvidia_progress.advance(n_task)
+                        continue
+
+                    n_start = time.time()
+                    try:
+                        analysis = nvidia.analyze(
+                            video, transcript,
+                            ollama_category=episode.primary_category,
+                        )
+                        if analysis:
+                            episode.apply_nvidia(analysis)
+                        else:
+                            episode.nvidia_status = "Failed"
+                    except Exception as e:
+                        episode.nvidia_status = "Failed"
+                        logger.error(f"NVIDIA failed for {episode.title[:40]}: {e}")
+
+                    nvidia_times.append(time.time() - n_start)
+                    nvidia_progress.advance(n_task)
+                    if i < len(important) - 1:
+                        time.sleep(settings["processing"]["delay_between_requests"] * 2)
+
+            nvidia_done = sum(1 for ep in important if ep.nvidia_status == "Done")
+            console.print(
+                f"  [green]Deep-analyzed: {nvidia_done}/{len(important)} episodes[/green]"
+            )
+        elif not skip_nvidia and not nvidia:
+            console.print("  [yellow]NVIDIA not configured — skipping deep analysis[/yellow]")
+            for ep in episodes:
+                if ep.nvidia_status == "Pending":
+                    ep.nvidia_status = "Skipped"
+        else:
+            # Mark non-important as skipped
+            for ep in episodes:
+                if ep.nvidia_status == "Pending" and ep.ollama_status == "Done":
+                    if ep.relevance < taxonomy.get("nvidia_threshold", 4.0):
+                        ep.nvidia_status = "Skipped"
+                    elif skip_nvidia:
+                        ep.nvidia_status = "Skipped"
+
+        # ─── Step 12: Google Sheets ───────────────────────────────
+
         if sheets:
-            console.print("  [12/13] Updating Google Sheets...")
-            sheets.push_episodes(episodes)
+            with console.status("[cyan]Pushing to Google Sheets...", spinner="dots2"):
+                sheets.push_episodes(episodes)
+            console.print("  [green]✓[/green] Google Sheets updated")
 
-        # Step 13: Mark processing complete
-        console.print("  [13/13] Processing complete ✓")
+        # ─── Step 13: Done ────────────────────────────────────────
 
+        console.print("  [bold green]✓ Channel complete[/bold green]")
         all_episodes.extend(episodes)
+
+        # Collect timing data for benchmarks
+        all_transcript_times.extend(transcript_times)
+        all_ollama_times.extend(ollama_times)
+        all_nvidia_times.extend(nvidia_times)
+
+    # ─── Save Benchmarks ──────────────────────────────────────────────
+
+    if all_transcript_times or all_ollama_times or all_nvidia_times:
+        new_benchmarks = {
+            "avg_transcript_sec": (
+                sum(all_transcript_times) / len(all_transcript_times)
+                if all_transcript_times else benchmarks.get("avg_transcript_sec", 2.0)
+            ),
+            "avg_ollama_sec": (
+                sum(all_ollama_times) / len(all_ollama_times)
+                if all_ollama_times else benchmarks.get("avg_ollama_sec", 35.0)
+            ),
+            "avg_nvidia_sec": (
+                sum(all_nvidia_times) / len(all_nvidia_times)
+                if all_nvidia_times else benchmarks.get("avg_nvidia_sec", 45.0)
+            ),
+            "last_run": datetime.now().isoformat(),
+            "episodes_processed": len(all_episodes),
+        }
+        save_benchmarks(new_benchmarks)
 
     # ─── Final Summary ────────────────────────────────────────────────
 
-    _print_final_summary(all_episodes, taxonomy.get("nvidia_threshold", 4.0))
+    pipeline_elapsed = time.time() - pipeline_start
+    _print_final_summary(all_episodes, taxonomy.get("nvidia_threshold", 4.0), pipeline_elapsed)
 
 
-def _print_final_summary(episodes: list[Episode], threshold: float):
-    """Print final pipeline summary."""
+def _print_final_summary(episodes: list[Episode], threshold: float, elapsed: float):
+    """Print final pipeline summary with stats."""
+    console.print()
+
     if not episodes:
-        console.print("\n[yellow]No episodes processed.[/yellow]")
+        console.print(Panel("[yellow]No episodes processed.[/yellow]", border_style="yellow"))
         return
-
-    console.print(f"\n[bold green]{'═'*50}[/bold green]")
-    console.print("[bold green]  Pipeline Complete![/bold green]")
-    console.print(f"[bold green]{'═'*50}[/bold green]\n")
 
     # Stats
     total = len(episodes)
@@ -349,13 +613,31 @@ def _print_final_summary(episodes: list[Episode], threshold: float):
     nvidia_done = sum(1 for ep in episodes if ep.nvidia_status == "Done")
     nvidia_skipped = sum(1 for ep in episodes if ep.nvidia_status == "Skipped")
 
-    console.print(f"  Total episodes: {total}")
-    console.print(f"  Ollama classified: {ollama_done}")
-    console.print(f"  NVIDIA deep-analyzed: {nvidia_done}")
-    console.print(f"  NVIDIA skipped (relevance < {threshold}): {nvidia_skipped}")
-    console.print()
+    # Calculate speed
+    minutes_elapsed = elapsed / 60
+    speed = total / minutes_elapsed if minutes_elapsed > 0 else 0
 
-    # Top episodes (highest relevance)
+    # Format elapsed time
+    if elapsed < 60:
+        time_str = f"{elapsed:.0f}s"
+    elif elapsed < 3600:
+        time_str = f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
+    else:
+        time_str = f"{int(elapsed // 3600)}h {int((elapsed % 3600) // 60)}m"
+
+    # Summary panel
+    summary_text = (
+        f"[bold green]Pipeline Complete![/bold green]\n\n"
+        f"  [white]Episodes processed:[/white]  [bold]{total}[/bold]\n"
+        f"  [white]Ollama classified:[/white]   [bold]{ollama_done}[/bold]\n"
+        f"  [white]NVIDIA analyzed:[/white]     [bold]{nvidia_done}[/bold]\n"
+        f"  [white]NVIDIA skipped:[/white]      [dim]{nvidia_skipped}[/dim]\n\n"
+        f"  [dim]Time: {time_str} | Speed: {speed:.1f} episodes/min[/dim]"
+    )
+
+    console.print(Panel(summary_text, border_style="green", padding=(1, 3)))
+
+    # Top episodes table
     top_episodes = sorted(
         [ep for ep in episodes if ep.ollama_status == "Done"],
         key=lambda ep: ep.relevance,
@@ -363,24 +645,31 @@ def _print_final_summary(episodes: list[Episode], threshold: float):
     )[:10]
 
     if top_episodes:
-        table = Table(title="🔥 Top Episodes by Relevance")
-        table.add_column("FO_ID", style="dim")
-        table.add_column("Title", style="cyan", max_width=40)
-        table.add_column("Category", style="yellow")
-        table.add_column("Relevance", justify="center", style="bold green")
-        table.add_column("NVIDIA", justify="center")
+        console.print()
+        table = Table(
+            title="[bold]Top Episodes by Relevance[/bold]",
+            border_style="bright_cyan",
+            header_style="bold cyan",
+            show_lines=True,
+        )
+        table.add_column("ID", style="dim", width=7)
+        table.add_column("Title", style="white", max_width=42)
+        table.add_column("Category", style="yellow", max_width=25)
+        table.add_column("Score", justify="center", style="bold green", width=6)
+        table.add_column("NVIDIA", justify="center", width=7)
 
         for ep in top_episodes:
-            nvidia_icon = "✓" if ep.nvidia_status == "Done" else "—"
+            nvidia_icon = "[green]✓[/green]" if ep.nvidia_status == "Done" else "[dim]—[/dim]"
             table.add_row(
                 ep.fo_id,
-                ep.title[:40],
+                ep.title[:42],
                 ep.primary_category,
                 str(ep.relevance),
                 nvidia_icon,
             )
 
         console.print(table)
+    console.print()
 
 
 if __name__ == "__main__":
@@ -410,9 +699,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Logging
+    # Logging — suppress loguru console output (rich handles display)
     logger.remove()
-    logger.add(sys.stderr, level="INFO")
     logger.add("pipeline.log", rotation="10 MB", level="DEBUG")
 
     since_date = f"{args.since}T00:00:00Z" if args.since else None

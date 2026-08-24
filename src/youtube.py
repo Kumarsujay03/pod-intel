@@ -45,7 +45,8 @@ class YouTubeCollector:
         max_results: Optional[int] = None,
     ) -> list[VideoMetadata]:
         """
-        Fetch ALL videos from a channel (respecting filters).
+        Fetch videos from a channel using the uploads playlist.
+        Uses playlistItems API (more reliable than search for fetching all videos).
         
         Args:
             channel: Channel configuration (includes filter settings)
@@ -64,83 +65,132 @@ class YouTubeCollector:
         if not published_after and hasattr(channel, 'since_date') and channel.since_date:
             published_after = f"{channel.since_date}T00:00:00Z"
 
+        # Parse since_date for comparison
+        cutoff_date = None
+        if published_after:
+            try:
+                from datetime import datetime as dt
+                cutoff_date = dt.fromisoformat(published_after.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                pass
+
+        # Get uploads playlist ID (UC... -> UU...)
+        uploads_playlist_id = "UU" + channel.channel_id[2:]
+
         videos = []
         next_page_token = None
+        empty_pages = 0  # Track consecutive pages with no qualifying videos
+        max_empty_pages = 5  # Stop after 5 consecutive pages with no results
 
         while True:
             try:
-                # Search for videos on this channel
-                search_params = {
-                    "part": "id,snippet",
-                    "channelId": channel.channel_id,
-                    "maxResults": 50,  # API max per page
-                    "order": "date",
-                    "type": "video",
+                # Fetch playlist items
+                playlist_params = {
+                    "part": "snippet",
+                    "playlistId": uploads_playlist_id,
+                    "maxResults": 50,
                 }
                 if next_page_token:
-                    search_params["pageToken"] = next_page_token
-                if published_after:
-                    search_params["publishedAfter"] = published_after
+                    playlist_params["pageToken"] = next_page_token
 
-                request = self.youtube.search().list(**search_params)
+                request = self.youtube.playlistItems().list(**playlist_params)
                 response = request.execute()
 
+                items = response.get("items", [])
+                if not items:
+                    break
+
                 video_ids = [
-                    item["id"]["videoId"]
-                    for item in response.get("items", [])
-                    if item["id"].get("videoId")
+                    item["snippet"]["resourceId"]["videoId"]
+                    for item in items
+                    if item["snippet"]["resourceId"].get("videoId")
                 ]
 
-                if video_ids:
-                    # Get detailed video info (duration, stats)
-                    details = self._get_video_details(video_ids)
+                if not video_ids:
+                    break
 
-                    for item in response["items"]:
-                        vid_id = item["id"].get("videoId")
-                        if not vid_id or vid_id not in details:
-                            continue
+                # Date filter: check if we've gone past cutoff
+                if cutoff_date:
+                    last_item = items[-1]
+                    last_published = last_item["snippet"].get("publishedAt", "")
+                    try:
+                        from datetime import datetime as dt
+                        last_date = dt.fromisoformat(last_published.replace("Z", "+00:00"))
+                        if last_date < cutoff_date:
+                            # Filter items on this page, then stop
+                            pass  # Will be filtered per-video below
+                    except (ValueError, TypeError):
+                        pass
 
-                        detail = details[vid_id]
-                        snippet = item["snippet"]
+                # Get detailed video info (duration, stats)
+                details = self._get_video_details(video_ids)
 
-                        # Parse duration
-                        iso_duration = detail.get("contentDetails", {}).get("duration", "")
-                        duration_str = self._parse_duration(iso_duration)
-                        duration_minutes = self._duration_to_minutes(iso_duration)
+                page_found = 0
+                for item in items:
+                    vid_id = item["snippet"]["resourceId"].get("videoId")
+                    if not vid_id or vid_id not in details:
+                        continue
 
-                        # Filter: Skip Shorts (under 60 seconds typically)
-                        if hasattr(channel, 'filter_shorts') and channel.filter_shorts:
-                            if duration_minutes < 1.5:  # Under 90 sec = likely a Short
+                    detail = details[vid_id]
+                    snippet = item["snippet"]
+
+                    # Date filter
+                    if cutoff_date:
+                        try:
+                            from datetime import datetime as dt
+                            pub_date = dt.fromisoformat(
+                                snippet["publishedAt"].replace("Z", "+00:00")
+                            )
+                            if pub_date < cutoff_date:
                                 continue
+                        except (ValueError, TypeError):
+                            pass
 
-                        # Filter: Minimum duration
-                        min_dur = getattr(channel, 'min_duration_minutes', 0)
-                        if min_dur and duration_minutes < min_dur:
+                    # Parse duration
+                    iso_duration = detail.get("contentDetails", {}).get("duration", "")
+                    duration_str = self._parse_duration(iso_duration)
+                    duration_minutes = self._duration_to_minutes(iso_duration)
+
+                    # Filter: Skip Shorts (under 90 seconds)
+                    if hasattr(channel, 'filter_shorts') and channel.filter_shorts:
+                        if duration_minutes < 1.5:
                             continue
 
-                        video = VideoMetadata(
-                            video_id=vid_id,
-                            channel_id=channel.channel_id,
-                            channel_name=channel.name,
-                            title=snippet["title"],
-                            url=f"https://www.youtube.com/watch?v={vid_id}",
-                            published_at=snippet["publishedAt"],
-                            duration=duration_str,
-                            description=snippet.get("description", ""),
-                            view_count=int(
-                                detail.get("statistics", {}).get("viewCount", 0)
-                            ),
-                            like_count=int(
-                                detail.get("statistics", {}).get("likeCount", 0)
-                            ),
-                            comment_count=int(
-                                detail.get("statistics", {}).get("commentCount", 0)
-                            ),
-                            thumbnail_url=snippet.get("thumbnails", {})
-                            .get("high", {})
-                            .get("url", ""),
-                        )
-                        videos.append(video)
+                    # Filter: Minimum duration
+                    min_dur = getattr(channel, 'min_duration_minutes', 0)
+                    if min_dur and duration_minutes < min_dur:
+                        continue
+
+                    video = VideoMetadata(
+                        video_id=vid_id,
+                        channel_id=channel.channel_id,
+                        channel_name=channel.name,
+                        title=snippet["title"],
+                        url=f"https://www.youtube.com/watch?v={vid_id}",
+                        published_at=snippet["publishedAt"],
+                        duration=duration_str,
+                        description=snippet.get("description", ""),
+                        view_count=int(
+                            detail.get("statistics", {}).get("viewCount", 0)
+                        ),
+                        like_count=int(
+                            detail.get("statistics", {}).get("likeCount", 0)
+                        ),
+                        comment_count=int(
+                            detail.get("statistics", {}).get("commentCount", 0)
+                        ),
+                        thumbnail_url=snippet.get("thumbnails", {})
+                        .get("high", {})
+                        .get("url", ""),
+                    )
+                    videos.append(video)
+                    page_found += 1
+
+                # Track empty pages to avoid infinite pagination on shorts-heavy channels
+                if page_found == 0:
+                    empty_pages += 1
+                else:
+                    empty_pages = 0
 
                 next_page_token = response.get("nextPageToken")
 
@@ -148,6 +198,9 @@ class YouTubeCollector:
                 if not next_page_token:
                     break
                 if len(videos) >= max_vids:
+                    break
+                if empty_pages >= max_empty_pages:
+                    logger.debug(f"  Stopping after {max_empty_pages} consecutive empty pages")
                     break
 
                 logger.debug(f"  Fetched {len(videos)} so far... (next page)")

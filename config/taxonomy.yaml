@@ -41,4 +41,4 @@ profile:
 
 # NVIDIA trigger threshold
 # Episodes with relevance_score >= this value get sent to NVIDIA for deep analysis
-nvidia_threshold: 4.0
+nvidia_threshold: 3.0
