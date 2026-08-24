@@ -1,0 +1,44 @@
+# Pipeline Settings
+
+# Ollama — Local LLM (processes ALL episodes)
+ollama:
+  base_url: "http://localhost:11434"
+  model: "llama3"  # Small instruct model. Also: mistral, gemma2, phi3
+  timeout: 120
+  temperature: 0.3
+  max_retries: 3
+
+# NVIDIA API — Cloud LLM (deep analysis for important episodes only)
+nvidia:
+  base_url: "https://integrate.api.nvidia.com/v1"
+  model: "meta/llama-3.1-70b-instruct"  # Powerful model for deep analysis
+  timeout: 180
+  temperature: 0.4
+  max_tokens: 4096
+  max_retries: 3
+
+# YouTube Data API v3
+youtube:
+  results_per_page: 50
+  order: "date"  # date, viewCount, rating
+  fetch_description: true
+  fetch_duration: true
+
+# Transcript
+transcript:
+  preferred_languages: ["en", "hi"]
+  fallback_to_auto: true
+  chunk_size: 5000  # chars per chunk for AI
+
+# Processing
+processing:
+  batch_size: 5
+  delay_between_requests: 2  # seconds between API calls
+  skip_already_processed: true
+  save_raw_transcripts: true
+
+# Logging
+logging:
+  level: "INFO"
+  file: "pipeline.log"
+  max_size_mb: 10

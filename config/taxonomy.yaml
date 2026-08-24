@@ -1,0 +1,44 @@
+# Controlled Category Taxonomy
+# These are the ONLY categories the AI can assign.
+# This prevents the model from creating hundreds of slightly different categories.
+
+categories:
+  - "AI & Technology"
+  - "Finance & Investing"
+  - "Business & Entrepreneurship"
+  - "Psychology"
+  - "Career"
+  - "Science & Research"
+  - "Health"
+  - "Geopolitics"
+  - "Defence & Intelligence"
+  - "India"
+  - "Engineering"
+  - "Sports"
+  - "Entertainment"
+  - "Education"
+
+# User Interest Profile
+# The AI uses this to calculate relevance scores.
+# Scale: 1 (low interest) to 5 (high interest)
+# Adjust these to YOUR preferences.
+
+profile:
+  "AI & Technology": 5
+  "Finance & Investing": 5
+  "Business & Entrepreneurship": 4
+  "Science & Research": 5
+  "Career": 4
+  "Engineering": 4
+  "Psychology": 3
+  "Geopolitics": 3
+  "Defence & Intelligence": 3
+  "India": 3
+  "Health": 2
+  "Education": 3
+  "Sports": 1
+  "Entertainment": 1
+
+# NVIDIA trigger threshold
+# Episodes with relevance_score >= this value get sent to NVIDIA for deep analysis
+nvidia_threshold: 4.0

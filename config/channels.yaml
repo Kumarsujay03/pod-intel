@@ -1,0 +1,62 @@
+# YouTube Channels Configuration
+# Pipeline will process ALL enabled channels.
+#
+# max_videos: 0 = fetch ALL videos (no limit)
+# since_date: Only fetch videos published after this date (YYYY-MM-DD)
+#             Leave empty to fetch ALL time
+#
+# IMPORTANT: You need the channel_id (starts with UC...) for the YouTube API.
+# To find it:
+#   - Run: python resolve_channels.py (auto-resolves from handles)
+#   - OR use: https://commentpicker.com/youtube-channel-id.php
+#   - OR view page source on the channel and search for "channelId"
+
+channels:
+  - name: "Raj Shamani"
+    channel_handle: "@rajshamani"
+    channel_id: "UCbMGBIayK26L4VaKbwYXSew"
+    enabled: true
+    fo_prefix: "RS"
+    max_videos: 0  # ALL episodes (500+)
+    since_date: ""  # All time
+    filter_shorts: true  # Skip shorts, only long-form
+
+  - name: "Nikhil Kamath (WTF / People by WTF)"
+    channel_handle: "@nikhil.kamath"
+    channel_id: ""  # Run: python resolve_channels.py to auto-fill
+    enabled: true
+    fo_prefix: "NK"
+    max_videos: 0  # ALL podcasts
+    since_date: ""  # All time
+    filter_shorts: true  # Only podcasts, skip shorts
+    min_duration_minutes: 40  # Skip anything under 15 min
+
+  - name: "Lenny's Podcast"
+    channel_handle: "@LennysPodcast"
+    channel_id: ""  # Run: python resolve_channels.py to auto-fill
+    enabled: true
+    fo_prefix: "LP"
+    max_videos: 0  # All podcasts in date range
+    since_date: "2024-08-01"  # Last ~2 years
+    filter_shorts: true
+    min_duration_minutes: 40
+
+  - name: "David Senra (Founders Podcast)"
+    channel_handle: "@DavidSenra"
+    channel_id: ""  # Run: python resolve_channels.py to auto-fill
+    enabled: true
+    fo_prefix: "DS"
+    max_videos: 0  # ALL long-form
+    since_date: ""  # All time
+    filter_shorts: true
+    min_duration_minutes: 40
+
+  - name: "The Knowledge Project (Shane Parrish)"
+    channel_handle: "@tkppodcast"
+    channel_id: ""  # Run: python resolve_channels.py to auto-fill
+    enabled: true
+    fo_prefix: "TKP"
+    max_videos: 0  # All in date range
+    since_date: "2024-08-01"  # Last ~2 years
+    filter_shorts: true
+    min_duration_minutes: 15
