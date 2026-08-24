@@ -52,9 +52,9 @@ function Ensure-Env {
         },
         @{
             Name = "GOOGLE_SHEETS_CREDENTIALS_PATH"
-            Label = "Path to Google service account JSON file"
-            Link = "https://console.cloud.google.com/iam-admin/serviceaccounts"
-            Default = "config/service_account.json"
+            Label = "Path to OAuth Client ID JSON (Desktop app)"
+            Link = "https://console.cloud.google.com/apis/credentials > Create OAuth Client ID > Desktop"
+            Default = "config/credentials.json"
         },
         @{
             Name = "GOOGLE_SHEETS_SPREADSHEET_ID"
@@ -272,16 +272,25 @@ function Run-Health {
         $c = Get-Content $envPath -Raw
         if ($c -match "YOUTUBE_API_KEY=.{10,}") { Write-Ok "YOUTUBE_API_KEY" } else { Write-Info "YOUTUBE_API_KEY not set" }
         if ($c -match "NVIDIA_API_KEY=.{10,}") { Write-Ok "NVIDIA_API_KEY" } else { Write-Info "NVIDIA_API_KEY not set" }
-        if ($c -match "GOOGLE_SHEETS_SPREADSHEET_ID=.{10,}") { Write-Ok "GOOGLE_SHEETS" } else { Write-Info "GOOGLE_SHEETS not set" }
+        if ($c -match "GOOGLE_SHEETS_SPREADSHEET_ID=.{10,}") { Write-Ok "GOOGLE_SHEETS_SPREADSHEET_ID" } else { Write-Info "GOOGLE_SHEETS_SPREADSHEET_ID not set" }
     }
     else {
         Write-Fail ".env missing. Run setup first."
     }
 
-    Write-Step "4" "Channel IDs"
+    Write-Step "4" "Google Sheets OAuth"
+    $credFile = Join-Path $projectRoot "config\credentials.json"
+    if (Test-Path $credFile) { Write-Ok "credentials.json found" }
+    else { Write-Fail "config\credentials.json missing. Download from Google Cloud Console." }
+
+    $tokenFile = Join-Path $projectRoot "config\authorized_user.json"
+    if (Test-Path $tokenFile) { Write-Ok "OAuth token cached (logged in)" }
+    else { Write-Info "Not logged in yet. First pipeline run will open browser." }
+
+    Write-Step "5" "Channel IDs"
     $yc = Get-Content "config\channels.yaml" -Raw
     $empty = ([regex]::Matches($yc, 'channel_id: ""')).Count
-    if ($empty -gt 0) { Write-Info "$empty channels need IDs (run option 5)" }
+    if ($empty -gt 0) { Write-Info "$empty channels need IDs (run option 2)" }
     else { Write-Ok "All channel IDs configured" }
 }
 

@@ -60,7 +60,7 @@ Add or remove channels by editing `config/channels.yaml` or using the CLI tool.
 - Ollama installed and running locally (https://ollama.com)
 - YouTube Data API v3 key
 - NVIDIA API key (https://build.nvidia.com)
-- Google Sheets service account credentials
+- Google Cloud OAuth Client ID (Desktop app) for Sheets access
 
 ## Setup
 
@@ -80,6 +80,11 @@ Select option 1 (Setup). The script will:
 
 The .env file is created automatically during setup. No manual file copying needed.
 
+For Google Sheets, download an OAuth Client ID JSON from Google Cloud Console:
+- Go to APIs & Services > Credentials > Create OAuth Client ID > Desktop app
+- Save the downloaded file as `config/credentials.json`
+- On first pipeline run with Sheets, your browser opens for Google login (one-time)
+
 ## Usage
 
 Run the terminal control panel:
@@ -97,15 +102,22 @@ Or directly in PowerShell:
 Menu options:
 
 ```
+--- SETUP ---
 [1] Setup     Install packages, configure keys, check Ollama
-[2] Full      Run full pipeline (Ollama + NVIDIA + Sheets)
-[3] Fast      Run Ollama only (skip NVIDIA, free and local)
+[2] Resolve   Fetch channel IDs from YouTube handles
+[3] Health    Check all services and config
+
+--- RUN ---
 [4] Test      Process 3 videos, no Sheets push (dry run)
-[5] Resolve   Fetch channel IDs from YouTube handles
-[6] Channels  List configured channels
-[7] Health    Check all services and config
-[8] Single    Process one specific channel
-[9] Recent    Process videos from last 30 days only
+[5] Fast      Run Ollama only (skip NVIDIA, free and local)
+[6] Full      Run full pipeline (Ollama + NVIDIA + Sheets)
+
+--- TARGETED ---
+[7] Single    Process one specific channel
+[8] Recent    Process videos from last 30 days only
+
+--- INFO ---
+[9] Channels  List configured channels
 [0] Exit
 ```
 

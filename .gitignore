@@ -2,6 +2,8 @@
 *.env
 
 config/service_account.json
+config/credentials.json
+config/authorized_user.json
 *.json.bak
 
 __pycache__/

@@ -7,22 +7,32 @@ Three sheets (not one giant sheet):
 
 Transcripts are NOT stored in sheets — only a file path reference.
 Google Sheets = database/index, not a transcript repository.
+
+Authentication:
+  Uses OAuth2 (browser login). On first run, opens browser for Google
+  sign-in. Token is cached locally — no repeated logins needed.
+
+  Setup: Download OAuth Client ID JSON from Google Cloud Console
+  (APIs & Services > Credentials > Create OAuth Client ID > Desktop app)
+  and save it as config/credentials.json
 """
 
 import os
+from pathlib import Path
 from typing import Optional
 
 import gspread
-from google.oauth2.service_account import Credentials
 from loguru import logger
 
 from src.models import Episode
 
 
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
+# Project root for resolving config paths
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# Default paths for OAuth files
+DEFAULT_CREDENTIALS_FILE = PROJECT_ROOT / "config" / "credentials.json"
+DEFAULT_AUTHORIZED_USER_FILE = PROJECT_ROOT / "config" / "authorized_user.json"
 
 
 class SheetsManager:
@@ -33,8 +43,12 @@ class SheetsManager:
         credentials_path: Optional[str] = None,
         spreadsheet_id: Optional[str] = None,
     ):
-        self.credentials_path = credentials_path or os.getenv(
-            "GOOGLE_SHEETS_CREDENTIALS_PATH", "config/service_account.json"
+        self.credentials_path = Path(
+            credentials_path
+            or os.getenv("GOOGLE_SHEETS_CREDENTIALS_PATH", str(DEFAULT_CREDENTIALS_FILE))
+        )
+        self.authorized_user_path = Path(
+            os.getenv("GOOGLE_SHEETS_AUTHORIZED_USER_PATH", str(DEFAULT_AUTHORIZED_USER_FILE))
         )
         self.spreadsheet_id = spreadsheet_id or os.getenv(
             "GOOGLE_SHEETS_SPREADSHEET_ID", ""
@@ -46,15 +60,27 @@ class SheetsManager:
                 "Set GOOGLE_SHEETS_SPREADSHEET_ID in .env"
             )
 
+        if not self.credentials_path.exists():
+            raise FileNotFoundError(
+                f"OAuth credentials file not found: {self.credentials_path}\n"
+                "Download it from Google Cloud Console:\n"
+                "  APIs & Services > Credentials > Create OAuth Client ID > Desktop app\n"
+                "Save it as config/credentials.json"
+            )
+
         self.client = self._authenticate()
         self.spreadsheet = self.client.open_by_key(self.spreadsheet_id)
 
     def _authenticate(self) -> gspread.Client:
-        """Authenticate with Google Sheets API."""
-        creds = Credentials.from_service_account_file(
-            self.credentials_path, scopes=SCOPES
+        """Authenticate via OAuth2 (browser-based login).
+
+        First run opens browser for consent. Token is cached locally
+        at config/authorized_user.json for subsequent runs.
+        """
+        return gspread.oauth(
+            credentials_filename=str(self.credentials_path),
+            authorized_user_filename=str(self.authorized_user_path),
         )
-        return gspread.authorize(creds)
 
     # ─── EPISODES Sheet ───────────────────────────────────────────────
 
