@@ -3,7 +3,7 @@
 # Ollama — Local LLM (processes ALL episodes)
 ollama:
   base_url: "http://localhost:11434"
-  model: "llama3"  # Small instruct model. Also: mistral, gemma2, phi3
+  model: "llama3.2:3b"  # Small instruct model. Also: mistral, gemma2, phi3
   timeout: 120
   temperature: 0.3
   max_retries: 3

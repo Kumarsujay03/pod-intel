@@ -5,6 +5,139 @@ $ErrorActionPreference = "Continue"
 $projectRoot = $PSScriptRoot
 Set-Location $projectRoot
 
+# ─── Virtual Environment ──────────────────────────────────────────────
+# Auto-creates .venv on first run. All subsequent runs use it.
+function Ensure-Venv {
+    $venvPath = Join-Path $projectRoot ".venv"
+    $activateScript = Join-Path $venvPath "Scripts\Activate.ps1"
+
+    if (-not (Test-Path $venvPath)) {
+        Write-Host ""
+        Write-Host "  Creating virtual environment (.venv)..." -ForegroundColor Cyan
+        python -m venv $venvPath
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  [FAIL] Could not create virtual environment." -ForegroundColor Red
+            Write-Host "  Make sure Python 3.10+ is installed." -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "  [OK] Virtual environment created" -ForegroundColor Green
+    }
+
+    # Activate if not already active
+    if (-not $env:VIRTUAL_ENV) {
+        & $activateScript
+    }
+}
+
+Ensure-Venv
+# ──────────────────────────────────────────────────────────────────────
+
+# Explicit path to venv Python — guarantees we always use the right one
+$venvPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
+
+# ─── Ollama Auto-Start & Model Selection ──────────────────────────────
+# Ranked preference: best models first. Picks the best one already installed.
+$ollamaModelPreference = @(
+    "llama3.1",
+    "llama3",
+    "mistral",
+    "gemma2",
+    "phi3",
+    "qwen2",
+    "llama2",
+    "deepseek-coder"
+)
+
+function Ensure-Ollama {
+    # Check if Ollama is reachable
+    $running = $false
+    try {
+        $resp = ollama list 2>&1
+        if ($LASTEXITCODE -eq 0) { $running = $true }
+    } catch {}
+
+    if (-not $running) {
+        Write-Host "  [INFO] Ollama not running. Starting in background..." -ForegroundColor DarkYellow
+        Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden
+        # Wait a few seconds for it to come up
+        Start-Sleep -Seconds 3
+
+        # Verify it started
+        try {
+            $resp = ollama list 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "  [OK] Ollama started successfully" -ForegroundColor Green
+            } else {
+                Write-Host "  [FAIL] Could not start Ollama. Install from https://ollama.com" -ForegroundColor Red
+                return
+            }
+        } catch {
+            Write-Host "  [FAIL] Could not start Ollama. Install from https://ollama.com" -ForegroundColor Red
+            return
+        }
+    }
+
+    # Get installed models
+    $modelOutput = ollama list 2>&1
+    $installedModels = @()
+    foreach ($line in ($modelOutput -split "`n")) {
+        if ($line -match "^\s*(\S+:\S+)") {
+            $name = $matches[1].Trim()
+            if ($name -and $name -ne "NAME") {
+                $installedModels += $name
+            }
+        }
+    }
+
+    if ($installedModels.Count -eq 0) {
+        Write-Host "  [INFO] No models installed. Pulling llama3..." -ForegroundColor DarkYellow
+        ollama pull llama3
+        $installedModels += "llama3:latest"
+    }
+
+    # Pick the best available model from preference list
+    # Match by base name (before the colon)
+    $bestModel = ""
+    foreach ($preferred in $ollamaModelPreference) {
+        foreach ($installed in $installedModels) {
+            $baseName = ($installed -split ":")[0]
+            if ($baseName -eq $preferred) {
+                $bestModel = $installed
+                break
+            }
+        }
+        if ($bestModel) { break }
+    }
+
+    # Fallback: use whatever is installed first
+    if (-not $bestModel) {
+        $bestModel = $installedModels[0]
+    }
+
+    # Update settings.yaml with the best model
+    $settingsFile = Join-Path $projectRoot "config\settings.yaml"
+    if (Test-Path $settingsFile) {
+        $content = Get-Content $settingsFile -Raw
+        # Match the model under the ollama section specifically (first model: line)
+        if ($content -match '(?m)^ollama:[\s\S]*?^\s+model:\s*"([^"]*)"') {
+            $currentModel = $matches[1]
+            if ($currentModel -ne $bestModel) {
+                # Replace only the first model: occurrence (ollama section)
+                $content = $content -replace '(?m)(^ollama:[\s\S]*?^\s+model:\s*)"[^"]*"', "`$1`"$bestModel`""
+                Set-Content -Path $settingsFile -Value $content -Encoding UTF8 -NoNewline
+                Write-Host "  [OK] Using model: $bestModel (updated from $currentModel)" -ForegroundColor Green
+            } else {
+                Write-Host "  [OK] Ollama ready | Model: $bestModel" -ForegroundColor Green
+            }
+        }
+    } else {
+        Write-Host "  [OK] Ollama ready | Model: $bestModel" -ForegroundColor Green
+    }
+}
+
+Ensure-Ollama
+# ──────────────────────────────────────────────────────────────────────
+
 function Write-Header {
     param([string]$text)
     Write-Host ""
@@ -168,26 +301,19 @@ function Run-Setup {
     Write-Header "Setup"
 
     Write-Step "1/5" "Checking Python"
-    $py = python --version 2>&1
+    $py = & $venvPython --version 2>&1
     if ($LASTEXITCODE -eq 0) { Write-Ok "$py" }
     else { Write-Fail "Python not found. Install Python 3.10+"; return }
 
-    Write-Step "2/5" "Installing packages"
+    Write-Step "2/5" "Installing packages (into .venv)"
     $reqFile = Join-Path $projectRoot "requirements.txt"
-    $pkgs = Get-Content $reqFile | Where-Object { $_ -and ($_ -notmatch "^#") }
-    $total = $pkgs.Count
-    $i = 0
-
-    foreach ($pkg in $pkgs) {
-        $i++
-        $name = ($pkg -split "==|>=|<=|~=")[0].Trim()
-        if (-not $name) { continue }
-        $pct = [math]::Round(($i / $total) * 100)
-        Write-Host "`r  [$i/$total] $pct%  $name                    " -NoNewline -ForegroundColor DarkGray
-        python -m pip install "$pkg" --quiet 2>&1 | Out-Null
+    & $venvPython -m pip install -r $reqFile --quiet 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        $count = (Get-Content $reqFile | Where-Object { $_ -and ($_ -notmatch "^#") }).Count
+        Write-Ok "$count packages installed"
+    } else {
+        Write-Fail "Some packages failed to install. Run manually: .venv\Scripts\pip install -r requirements.txt"
     }
-    Write-Host ""
-    Write-Ok "$total packages installed"
 
     Write-Step "3/5" "Configuring environment"
     Ensure-Env
@@ -197,7 +323,7 @@ function Run-Setup {
     if (Test-Path $envPath) {
         $content = Get-Content $envPath -Raw
         if ($content -match "YOUTUBE_API_KEY=.{10,}") {
-            python resolve_channels.py
+            & $venvPython resolve_channels.py
             if ($LASTEXITCODE -eq 0) { Write-Ok "Channels resolved" }
             else { Write-Info "Some channels could not be resolved" }
         }
@@ -210,14 +336,7 @@ function Run-Setup {
     }
 
     Write-Step "5/5" "Checking Ollama"
-    $oll = ollama list 2>&1
-    if ($LASTEXITCODE -eq 0) {
-        Write-Ok "Ollama is running"
-        $oll | ForEach-Object { Write-Host "       $_" -ForegroundColor DarkGray }
-    }
-    else {
-        Write-Fail "Ollama not reachable. Start it: ollama serve"
-    }
+    Ensure-Ollama
 
     Write-Host ""
     Write-Host "  Setup complete." -ForegroundColor Green
@@ -227,42 +346,40 @@ function Run-Setup {
 function Run-Full {
     Write-Header "Full Pipeline"
     Ensure-Env
-    python -m src.main
+    & $venvPython -m src.main
 }
 
 function Run-Fast {
     Write-Header "Ollama Only"
     Ensure-Env
-    python -m src.main --skip-nvidia
+    & $venvPython -m src.main --skip-nvidia
 }
 
 function Run-Test {
     Write-Header "Test Run (3 videos, no Sheets)"
     Ensure-Env
-    python -m src.main --skip-nvidia --skip-sheets --max-videos 3
+    & $venvPython -m src.main --skip-nvidia --skip-sheets --max-videos 3
 }
 
 function Run-Resolve {
     Write-Header "Resolve Channel IDs"
     Ensure-Env
-    python resolve_channels.py
+    & $venvPython resolve_channels.py
 }
 
 function Run-Channels {
     Write-Header "Channels"
-    python manage_channels.py list
+    & $venvPython manage_channels.py list
 }
 
 function Run-Health {
     Write-Header "Health Check"
 
     Write-Step "1" "Ollama"
-    $oll = ollama list 2>&1
-    if ($LASTEXITCODE -eq 0) { Write-Ok "Running" }
-    else { Write-Fail "Not running" }
+    Ensure-Ollama
 
     Write-Step "2" "Python packages"
-    $check = python -c "import ollama, gspread, yaml, openai, loguru; print('ok')" 2>&1
+    $check = & $venvPython -c "import ollama, gspread, yaml, openai, loguru; print('ok')" 2>&1
     if ("$check".Trim() -eq "ok") { Write-Ok "All installed" }
     else { Write-Fail "Missing: $check" }
 
@@ -296,12 +413,12 @@ function Run-Health {
 
 function Run-Single {
     Write-Header "Single Channel"
-    python manage_channels.py list
+    & $venvPython manage_channels.py list
     Write-Host ""
     $name = Read-Host "  Channel name"
     if ($name) {
         Ensure-Env
-        python -m src.main --channels "$name" --skip-nvidia
+        & $venvPython -m src.main --channels "$name" --skip-nvidia
     }
 }
 
@@ -310,7 +427,7 @@ function Run-Recent {
     Ensure-Env
     $since = (Get-Date).AddDays(-30).ToString("yyyy-MM-dd")
     Write-Host "  Since: $since" -ForegroundColor DarkGray
-    python -m src.main --since $since --skip-nvidia
+    & $venvPython -m src.main --since $since --skip-nvidia
 }
 
 # Main loop

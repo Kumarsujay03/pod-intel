@@ -37,6 +37,7 @@ class TranscriptExtractor:
         self.chunk_size = chunk_size
         self.transcripts_dir = Path(transcripts_dir)
         self.transcripts_dir.mkdir(parents=True, exist_ok=True)
+        self.api = YouTubeTranscriptApi()
 
     def get_transcript(self, video: VideoMetadata) -> Optional[TranscriptData]:
         """
@@ -44,7 +45,7 @@ class TranscriptExtractor:
         Returns full TranscriptData for in-memory processing.
         """
         try:
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video.video_id)
+            transcript_list = self.api.list(video.video_id)
 
             transcript = None
             is_auto = False
@@ -75,9 +76,9 @@ class TranscriptExtractor:
                 logger.warning(f"No transcript: {video.title} ({video.video_id})")
                 return None
 
-            # Fetch transcript segments
-            transcript_data = transcript.fetch()
-            full_text = " ".join(seg["text"] for seg in transcript_data)
+            # Fetch transcript segments (v1.x API returns FetchedTranscript)
+            fetched = transcript.fetch()
+            full_text = " ".join(snippet.text for snippet in fetched.snippets)
             full_text = self._clean_text(full_text)
             chunks = self._chunk_text(full_text)
 
