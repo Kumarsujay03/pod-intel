@@ -48,6 +48,7 @@ from rich.status import Status
 from src.models import ChannelConfig, VideoMetadata, Episode
 from src.youtube import YouTubeCollector
 from src.transcript import TranscriptExtractor
+from src.gemini_client import GeminiClassifier
 from src.ollama_client import OllamaClassifier
 from src.nvidia_client import NvidiaAnalyzer
 from src.processing_router import ProcessingRouter
@@ -85,10 +86,10 @@ def estimate_time(benchmarks: dict, total_videos: int, skip_nvidia: bool) -> str
         return "unknown (first run)"
 
     avg_transcript = benchmarks.get("avg_transcript_sec", 2.0)
-    avg_ollama = benchmarks.get("avg_ollama_sec", 35.0)
+    avg_classify = benchmarks.get("avg_classify_sec", 5.0)
     avg_nvidia = benchmarks.get("avg_nvidia_sec", 45.0)
 
-    est = total_videos * (avg_transcript + avg_ollama)
+    est = total_videos * (avg_transcript + avg_classify)
     if not skip_nvidia:
         est += total_videos * avg_nvidia
 
@@ -195,6 +196,7 @@ def run_pipeline(
     skip_sheets: bool = False,
     max_videos_override: int = None,
     since_date: str = None,
+    classifier_type: str = "gemini",
 ):
     """Run the full 13-step pipeline with rich animations."""
     pipeline_start = time.time()
@@ -236,7 +238,7 @@ def run_pipeline(
         console.print(
             f"  [dim]ETA based on previous runs: "
             f"Transcript ~{benchmarks.get('avg_transcript_sec', 0):.1f}s/ep | "
-            f"Ollama ~{benchmarks.get('avg_ollama_sec', 0):.1f}s/ep | "
+            f"Gemini ~{benchmarks.get('avg_classify_sec', 0):.1f}s/ep | "
             f"NVIDIA ~{benchmarks.get('avg_nvidia_sec', 0):.1f}s/ep[/dim]"
         )
     console.print()
@@ -257,14 +259,23 @@ def run_pipeline(
             )
             time.sleep(0.2)
 
-            status.update("[bold cyan]Loading Ollama model...")
-            ollama = OllamaClassifier(
-                model=settings["ollama"]["model"],
-                base_url=settings["ollama"]["base_url"],
-                temperature=settings["ollama"]["temperature"],
-                categories=taxonomy.get("categories", []),
-                profile=taxonomy.get("profile", {}),
-            )
+            status.update(f"[bold cyan]Loading {classifier_type} classifier...")
+            if classifier_type == "ollama":
+                classifier = OllamaClassifier(
+                    model=settings["ollama"]["model"],
+                    base_url=settings["ollama"]["base_url"],
+                    temperature=settings["ollama"]["temperature"],
+                    categories=taxonomy.get("categories", []),
+                    profile=taxonomy.get("profile", {}),
+                )
+            else:
+                classifier = GeminiClassifier(
+                    model=settings["gemini"]["model"],
+                    temperature=settings["gemini"]["temperature"],
+                    categories=taxonomy.get("categories", []),
+                    profile=taxonomy.get("profile", {}),
+                    rpm_limit=settings["gemini"].get("rpm_limit", 15),
+                )
             time.sleep(0.2)
 
             nvidia = None
@@ -282,7 +293,7 @@ def run_pipeline(
                     skip_nvidia = True
 
             router = ProcessingRouter(
-                ollama=ollama,
+                classifier=classifier,
                 nvidia=nvidia,
                 nvidia_threshold=taxonomy.get("nvidia_threshold", 4.0),
                 delay_between_requests=settings["processing"]["delay_between_requests"],
@@ -311,14 +322,19 @@ def run_pipeline(
     # ─── Health Checks (animated) ─────────────────────────────────────
 
     with console.status("[bold]Running health checks...", spinner="point") as status:
-        status.update("[bold]Checking Ollama...")
-        if not ollama.health_check():
-            console.print("  [red]✗ Ollama not available[/red]")
-            console.print(f"    Run: ollama pull {settings['ollama']['model']}")
+        status.update(f"[bold]Checking {classifier_type} classifier...")
+        if not classifier.health_check():
+            console.print(f"  [red]✗ {classifier_type.capitalize()} not available[/red]")
+            if classifier_type == "gemini":
+                console.print("    Check GEMINI_API_KEY in .env or try: pip install --upgrade google-genai")
+            else:
+                console.print("    Make sure Ollama is running: ollama serve")
             return
-        console.print("  [green]✓[/green] Ollama [dim]({model})[/dim]".format(
-            model=settings['ollama']['model']
-        ))
+        classifier_label = (
+            settings['gemini']['model'] if classifier_type == "gemini"
+            else settings['ollama']['model']
+        )
+        console.print(f"  [green]✓[/green] {classifier_type.capitalize()} [dim]({classifier_label})[/dim]")
 
         if nvidia and not skip_nvidia:
             status.update("[bold]Checking NVIDIA API...")
@@ -344,7 +360,7 @@ def run_pipeline(
 
     all_episodes: list[Episode] = []
     all_transcript_times: list[float] = []
-    all_ollama_times: list[float] = []
+    all_classify_times: list[float] = []
     all_nvidia_times: list[float] = []
 
     for ch_idx, channel in enumerate(channels):
@@ -441,45 +457,43 @@ def run_pipeline(
 
         # ─── Steps 6-8: Ollama Classification (progress bar) ──────
 
-        ollama_times = []
-        ollama_progress = make_step_progress()
+        classify_times = []
+        classify_progress = make_step_progress()
 
-        with ollama_progress:
-            o_task = ollama_progress.add_task(
-                "Ollama classifying", total=len(episodes)
+        with classify_progress:
+            o_task = classify_progress.add_task(
+                "Gemini classifying", total=len(episodes)
             )
 
             for i, episode in enumerate(episodes):
                 if episode.ollama_status == "Done":
-                    ollama_progress.advance(o_task)
+                    classify_progress.advance(o_task)
                     continue
 
                 video = videos_dict.get(episode.video_id)
                 if not video:
-                    ollama_progress.advance(o_task)
+                    classify_progress.advance(o_task)
                     continue
 
-                ollama_progress.update(
+                classify_progress.update(
                     o_task,
-                    description=f"[cyan]Ollama: {episode.title[:35]}..."
+                    description=f"[cyan]Gemini: {episode.title[:35]}..."
                 )
 
                 o_start = time.time()
                 transcript = transcripts_dict.get(episode.video_id)
                 try:
-                    classification = ollama.classify(video, transcript)
+                    classification = classifier.classify(video, transcript)
                     if classification:
                         episode.apply_ollama(classification)
                     else:
                         episode.ollama_status = "Failed"
                 except Exception as e:
                     episode.ollama_status = "Failed"
-                    logger.error(f"Ollama failed for {episode.title[:40]}: {e}")
+                    logger.error(f"Gemini failed for {episode.title[:40]}: {e}")
 
-                ollama_times.append(time.time() - o_start)
-                ollama_progress.advance(o_task)
-                if i < len(episodes) - 1:
-                    time.sleep(settings["processing"]["delay_between_requests"])
+                classify_times.append(time.time() - o_start)
+                classify_progress.advance(o_task)
 
         ollama_done = sum(1 for ep in episodes if ep.ollama_status == "Done")
         console.print(
@@ -569,20 +583,20 @@ def run_pipeline(
 
         # Collect timing data for benchmarks
         all_transcript_times.extend(transcript_times)
-        all_ollama_times.extend(ollama_times)
+        all_classify_times.extend(classify_times)
         all_nvidia_times.extend(nvidia_times)
 
     # ─── Save Benchmarks ──────────────────────────────────────────────
 
-    if all_transcript_times or all_ollama_times or all_nvidia_times:
+    if all_transcript_times or all_classify_times or all_nvidia_times:
         new_benchmarks = {
             "avg_transcript_sec": (
                 sum(all_transcript_times) / len(all_transcript_times)
                 if all_transcript_times else benchmarks.get("avg_transcript_sec", 2.0)
             ),
-            "avg_ollama_sec": (
-                sum(all_ollama_times) / len(all_ollama_times)
-                if all_ollama_times else benchmarks.get("avg_ollama_sec", 35.0)
+            "avg_classify_sec": (
+                sum(all_classify_times) / len(all_classify_times)
+                if all_classify_times else benchmarks.get("avg_classify_sec", 5.0)
             ),
             "avg_nvidia_sec": (
                 sum(all_nvidia_times) / len(all_nvidia_times)
@@ -681,8 +695,12 @@ if __name__ == "__main__":
         help="Specific channel names to process (default: all enabled)",
     )
     parser.add_argument(
+        "--classifier", choices=["gemini", "ollama"], default="gemini",
+        help="Which LLM to use for classification (default: gemini)",
+    )
+    parser.add_argument(
         "--skip-nvidia", action="store_true",
-        help="Skip NVIDIA deep analysis (Ollama only — fast & free)",
+        help="Skip NVIDIA deep analysis (classification only — fast & free)",
     )
     parser.add_argument(
         "--skip-sheets", action="store_true",
@@ -711,4 +729,5 @@ if __name__ == "__main__":
         skip_sheets=args.skip_sheets,
         max_videos_override=args.max_videos,
         since_date=since_date,
+        classifier_type=args.classifier,
     )

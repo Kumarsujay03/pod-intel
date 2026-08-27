@@ -39,107 +39,6 @@ Ensure-Venv
 # Explicit path to venv Python — guarantees we always use the right one
 $venvPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
 
-# ─── Ollama Auto-Start & Model Selection ──────────────────────────────
-# Ranked preference: best models first. Picks the best one already installed.
-$ollamaModelPreference = @(
-    "llama3.1",
-    "llama3",
-    "mistral",
-    "gemma2",
-    "phi3",
-    "qwen2",
-    "llama2",
-    "deepseek-coder"
-)
-
-function Ensure-Ollama {
-    # Check if Ollama is reachable
-    $running = $false
-    try {
-        $resp = ollama list 2>&1
-        if ($LASTEXITCODE -eq 0) { $running = $true }
-    } catch {}
-
-    if (-not $running) {
-        Write-Host "  [INFO] Ollama not running. Starting in background..." -ForegroundColor DarkYellow
-        Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden
-        # Wait a few seconds for it to come up
-        Start-Sleep -Seconds 3
-
-        # Verify it started
-        try {
-            $resp = ollama list 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "  [OK] Ollama started successfully" -ForegroundColor Green
-            } else {
-                Write-Host "  [FAIL] Could not start Ollama. Install from https://ollama.com" -ForegroundColor Red
-                return
-            }
-        } catch {
-            Write-Host "  [FAIL] Could not start Ollama. Install from https://ollama.com" -ForegroundColor Red
-            return
-        }
-    }
-
-    # Get installed models
-    $modelOutput = ollama list 2>&1
-    $installedModels = @()
-    foreach ($line in ($modelOutput -split "`n")) {
-        if ($line -match "^\s*(\S+:\S+)") {
-            $name = $matches[1].Trim()
-            if ($name -and $name -ne "NAME") {
-                $installedModels += $name
-            }
-        }
-    }
-
-    if ($installedModels.Count -eq 0) {
-        Write-Host "  [INFO] No models installed. Pulling llama3..." -ForegroundColor DarkYellow
-        ollama pull llama3
-        $installedModels += "llama3:latest"
-    }
-
-    # Pick the best available model from preference list
-    # Match by base name (before the colon)
-    $bestModel = ""
-    foreach ($preferred in $ollamaModelPreference) {
-        foreach ($installed in $installedModels) {
-            $baseName = ($installed -split ":")[0]
-            if ($baseName -eq $preferred) {
-                $bestModel = $installed
-                break
-            }
-        }
-        if ($bestModel) { break }
-    }
-
-    # Fallback: use whatever is installed first
-    if (-not $bestModel) {
-        $bestModel = $installedModels[0]
-    }
-
-    # Update settings.yaml with the best model
-    $settingsFile = Join-Path $projectRoot "config\settings.yaml"
-    if (Test-Path $settingsFile) {
-        $content = Get-Content $settingsFile -Raw
-        # Match the model under the ollama section specifically (first model: line)
-        if ($content -match '(?m)^ollama:[\s\S]*?^\s+model:\s*"([^"]*)"') {
-            $currentModel = $matches[1]
-            if ($currentModel -ne $bestModel) {
-                # Replace only the first model: occurrence (ollama section)
-                $content = $content -replace '(?m)(^ollama:[\s\S]*?^\s+model:\s*)"[^"]*"', "`$1`"$bestModel`""
-                Set-Content -Path $settingsFile -Value $content -Encoding UTF8 -NoNewline
-                Write-Host "  [OK] Using model: $bestModel (updated from $currentModel)" -ForegroundColor Green
-            } else {
-                Write-Host "  [OK] Ollama ready | Model: $bestModel" -ForegroundColor Green
-            }
-        }
-    } else {
-        Write-Host "  [OK] Ollama ready | Model: $bestModel" -ForegroundColor Green
-    }
-}
-
-Ensure-Ollama
 # ──────────────────────────────────────────────────────────────────────
 
 function Write-Header {
@@ -182,6 +81,12 @@ function Ensure-Env {
             Default = ""
         },
         @{
+            Name = "GEMINI_API_KEY"
+            Label = "Google Gemini API Key"
+            Link = "https://aistudio.google.com/apikey"
+            Default = ""
+        },
+        @{
             Name = "NVIDIA_API_KEY"
             Label = "NVIDIA API Key"
             Link = "https://build.nvidia.com/"
@@ -198,12 +103,6 @@ function Ensure-Env {
             Label = "Spreadsheet ID from your Google Sheet URL"
             Link = "URL format: https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/"
             Default = ""
-        },
-        @{
-            Name = "OLLAMA_BASE_URL"
-            Label = "Ollama server URL"
-            Link = "Default works if Ollama runs locally"
-            Default = "http://localhost:11434"
         }
     )
 
@@ -291,8 +190,8 @@ function Show-Menu {
     Write-Host "  │  [3] Health    Check all services and config    │" -ForegroundColor White
     Write-Host "  ├─ RUN ──────────────────────────────────────────┤" -ForegroundColor DarkGray
     Write-Host "  │  [4] Test      Dry run (3 videos, no Sheets)   │" -ForegroundColor White
-    Write-Host "  │  [5] Fast      Ollama only (free and local)    │" -ForegroundColor White
-    Write-Host "  │  [6] Full      Full pipeline (all services)    │" -ForegroundColor White
+    Write-Host "  │  [5] Fast      Ollama local (free, no internet)│" -ForegroundColor White
+    Write-Host "  │  [6] Full      Gemini + NVIDIA + Sheets (fast) │" -ForegroundColor White
     Write-Host "  ├─ TARGETED ─────────────────────────────────────┤" -ForegroundColor DarkGray
     Write-Host "  │  [7] Single    Process one specific channel    │" -ForegroundColor White
     Write-Host "  │  [8] Recent    Last 30 days only               │" -ForegroundColor White
@@ -362,8 +261,15 @@ function Run-Setup {
         Write-Info "Skipped. No .env file."
     }
 
-    Write-Step "5/5" "Checking Ollama"
-    Ensure-Ollama
+    Write-Step "5/5" "Checking APIs"
+    $envPath = Join-Path $projectRoot ".env"
+    if (Test-Path $envPath) {
+        $c = Get-Content $envPath -Raw
+        if ($c -match "GEMINI_API_KEY=.{10,}") { Write-Ok "Gemini API key set" }
+        else { Write-Info "GEMINI_API_KEY not set yet" }
+        if ($c -match "NVIDIA_API_KEY=.{10,}") { Write-Ok "NVIDIA API key set" }
+        else { Write-Info "NVIDIA_API_KEY not set yet" }
+    }
 
     Write-Host ""
     Write-Host "  Setup complete." -ForegroundColor Green
@@ -371,15 +277,15 @@ function Run-Setup {
 }
 
 function Run-Full {
-    Write-Header "Full Pipeline"
+    Write-Header "Full Pipeline (Gemini + NVIDIA + Sheets)"
     Ensure-Env
-    & $venvPython -m src.main
+    & $venvPython -m src.main --classifier gemini
 }
 
 function Run-Fast {
-    Write-Header "Ollama Only"
+    Write-Header "Ollama Local (free, no internet)"
     Ensure-Env
-    & $venvPython -m src.main --skip-nvidia
+    & $venvPython -m src.main --classifier ollama --skip-nvidia
 }
 
 function Run-Test {
@@ -402,11 +308,16 @@ function Run-Channels {
 function Run-Health {
     Write-Header "Health Check"
 
-    Write-Step "1" "Ollama"
-    Ensure-Ollama
+    Write-Step "1" "Gemini API"
+    $envPath = Join-Path $projectRoot ".env"
+    if (Test-Path $envPath) {
+        $c = Get-Content $envPath -Raw
+        if ($c -match "GEMINI_API_KEY=.{10,}") { Write-Ok "Gemini API key configured" }
+        else { Write-Fail "GEMINI_API_KEY not set. Get it from https://aistudio.google.com/apikey" }
+    }
 
     Write-Step "2" "Python packages"
-    $check = & $venvPython -c "import ollama, gspread, yaml, openai, loguru; print('ok')" 2>&1
+    $check = & $venvPython -c "import gspread, yaml, openai, loguru, google.genai; print('ok')" 2>&1
     if ("$check".Trim() -eq "ok") { Write-Ok "All installed" }
     else { Write-Fail "Missing: $check" }
 
@@ -415,6 +326,7 @@ function Run-Health {
     if (Test-Path $envPath) {
         $c = Get-Content $envPath -Raw
         if ($c -match "YOUTUBE_API_KEY=.{10,}") { Write-Ok "YOUTUBE_API_KEY" } else { Write-Info "YOUTUBE_API_KEY not set" }
+        if ($c -match "GEMINI_API_KEY=.{10,}") { Write-Ok "GEMINI_API_KEY" } else { Write-Info "GEMINI_API_KEY not set" }
         if ($c -match "NVIDIA_API_KEY=.{10,}") { Write-Ok "NVIDIA_API_KEY" } else { Write-Info "NVIDIA_API_KEY not set" }
         if ($c -match "GOOGLE_SHEETS_SPREADSHEET_ID=.{10,}") { Write-Ok "GOOGLE_SHEETS_SPREADSHEET_ID" } else { Write-Info "GOOGLE_SHEETS_SPREADSHEET_ID not set" }
     }

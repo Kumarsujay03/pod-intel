@@ -38,16 +38,16 @@ console = Console()
 
 
 class ProcessingRouter:
-    """Routes episodes through Ollama (all) → NVIDIA (important only)."""
+    """Routes episodes through Classifier (all) → NVIDIA (important only)."""
 
     def __init__(
         self,
-        ollama: OllamaClassifier,
+        classifier,
         nvidia: Optional[NvidiaAnalyzer] = None,
         nvidia_threshold: float = 4.0,
         delay_between_requests: float = 2.0,
     ):
-        self.ollama = ollama
+        self.classifier = classifier
         self.nvidia = nvidia
         self.nvidia_threshold = nvidia_threshold
         self.delay = delay_between_requests
@@ -62,7 +62,7 @@ class ProcessingRouter:
         Step 1: Run Ollama on ALL episodes.
         Cheap, fast, local. Classifies everything.
         """
-        logger.info(f"[Router] Ollama processing {len(episodes)} episodes...")
+        logger.info(f"[Router] Classifying {len(episodes)} episodes...")
 
         for i, episode in enumerate(episodes):
             if episode.ollama_status == "Done":
@@ -75,7 +75,7 @@ class ProcessingRouter:
             transcript = transcripts.get(episode.video_id)
 
             try:
-                classification = self.ollama.classify(video, transcript)
+                classification = self.classifier.classify(video, transcript)
 
                 if classification:
                     episode.apply_ollama(classification)
@@ -84,7 +84,7 @@ class ProcessingRouter:
 
             except Exception as e:
                 episode.ollama_status = "Failed"
-                logger.error(f"[Router] Ollama failed for {episode.title[:40]}: {e}")
+                logger.error(f"[Router] Classification failed for {episode.title[:40]}: {e}")
 
             # Rate limiting
             if i < len(episodes) - 1:
@@ -92,7 +92,7 @@ class ProcessingRouter:
 
         done = sum(1 for ep in episodes if ep.ollama_status == "Done")
         failed = sum(1 for ep in episodes if ep.ollama_status == "Failed")
-        logger.info(f"[Router] Ollama complete: {done} done, {failed} failed")
+        logger.info(f"[Router] Classification complete: {done} done, {failed} failed")
 
         return episodes
 

@@ -35,3 +35,7 @@ logs/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Personal scripts (not for repo)
+run_and_shutdown.ps1
+pipeline_runs.log
