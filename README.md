@@ -137,7 +137,7 @@ python -m src.main --max-videos 10 --skip-nvidia           # quick sample
 |-- data/
 |   |-- raw/                 Backup of fetched metadata (JSON)
 |   |-- transcripts/         Saved transcript files per channel
-|   |-- processed/           Output artifacts + timing benchmarks
+|   |-- processed/           CSV backup + timing benchmarks
 |
 |-- src/
 |   |-- main.py              Pipeline orchestrator with rich animations
@@ -171,6 +171,8 @@ FO_ID, Guest, Title, YouTube_URL, Date, Duration, Description, Transcript, Prima
 **PROFILE** — your interest scores (1-5 per category). The pipeline uses this to calculate relevance. High relevance episodes get routed to NVIDIA for deep analysis.
 
 Transcripts are stored as local files, not in the spreadsheet. The sheet holds a reference path only.
+
+**Local CSV Backup** — every pipeline run automatically saves results to `data/processed/episodes.csv`. This ensures no data is lost even if Google Sheets auth fails or network drops mid-run.
 
 ## Configuration
 

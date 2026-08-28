@@ -1,12 +1,13 @@
-# YouTube Knowledge Pipeline - Dependencies
+# Pod-Intel — Dependencies
 
 # YouTube
 google-api-python-client>=2.131.0
 youtube-transcript-api>=1.0.0
 
 # AI / LLM
-google-genai>=1.0.0  # Gemini API for fast classification
-openai>=1.51.0  # Used for NVIDIA API (OpenAI-compatible endpoint)
+google-genai>=1.0.0  # Gemini API for fast cloud classification
+ollama>=0.3.3  # Local LLM (optional, for offline mode)
+openai>=1.51.0  # NVIDIA API (OpenAI-compatible endpoint)
 
 # Google Sheets
 gspread>=6.1.2
@@ -16,13 +17,11 @@ google-auth-oauthlib>=1.2.1
 # Data Processing
 pyyaml>=6.0.2
 pydantic>=2.9.2
-pandas>=2.2.3
 
 # Utilities
 python-dotenv>=1.0.1
-rich>=13.9.1  # Beautiful terminal output
+rich>=13.9.1  # Terminal UI (progress bars, spinners, panels)
 tenacity>=9.0.0  # Retry logic
-tqdm>=4.66.5  # Progress bars
 
 # Logging
 loguru>=0.7.2

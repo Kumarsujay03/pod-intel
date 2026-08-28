@@ -31,7 +31,6 @@ from src.models import (
     NvidiaAnalysis,
     Episode,
 )
-from src.ollama_client import OllamaClassifier
 from src.nvidia_client import NvidiaAnalyzer
 
 console = Console()

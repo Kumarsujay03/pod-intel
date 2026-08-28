@@ -569,12 +569,23 @@ def run_pipeline(
                     elif skip_nvidia:
                         ep.nvidia_status = "Skipped"
 
-        # ─── Step 12: Google Sheets ───────────────────────────────
+        # ─── Step 12: Local CSV Backup (always saves) ─────────────
+
+        csv_path = Path("data/processed/episodes.csv")
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        _save_csv_backup(episodes, csv_path)
+        console.print(f"  [green]✓[/green] CSV backup saved [dim]({csv_path})[/dim]")
+
+        # ─── Step 12b: Google Sheets (optional) ───────────────────
 
         if sheets:
-            with console.status("[cyan]Pushing to Google Sheets...", spinner="dots2"):
-                sheets.push_episodes(episodes)
-            console.print("  [green]✓[/green] Google Sheets updated")
+            try:
+                with console.status("[cyan]Pushing to Google Sheets...", spinner="dots2"):
+                    sheets.push_episodes(episodes)
+                console.print("  [green]✓[/green] Google Sheets updated")
+            except Exception as e:
+                console.print(f"  [yellow]⚠ Sheets push failed: {e}[/yellow]")
+                console.print("  [dim]Data is safe in CSV backup.[/dim]")
 
         # ─── Step 13: Done ────────────────────────────────────────
 
@@ -611,6 +622,41 @@ def run_pipeline(
 
     pipeline_elapsed = time.time() - pipeline_start
     _print_final_summary(all_episodes, taxonomy.get("nvidia_threshold", 4.0), pipeline_elapsed)
+
+
+def _save_csv_backup(episodes: list[Episode], csv_path: Path):
+    """
+    Save episodes to local CSV. Appends to existing file (no duplicates by FO_ID).
+    This ALWAYS runs — your data is never lost even if Sheets fails.
+    """
+    import csv
+
+    headers = Episode.sheet_headers()
+
+    # Load existing FO_IDs to avoid duplicates
+    existing_ids = set()
+    if csv_path.exists():
+        with open(csv_path, "r", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            next(reader, None)  # skip header
+            for row in reader:
+                if row:
+                    existing_ids.add(row[0])
+
+    new_episodes = [ep for ep in episodes if ep.fo_id not in existing_ids]
+
+    if not new_episodes:
+        return
+
+    # Write header if file is new
+    write_header = not csv_path.exists() or csv_path.stat().st_size == 0
+
+    with open(csv_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if write_header:
+            writer.writerow(headers)
+        for ep in new_episodes:
+            writer.writerow(ep.to_sheet_row())
 
 
 def _print_final_summary(episodes: list[Episode], threshold: float, elapsed: float):
