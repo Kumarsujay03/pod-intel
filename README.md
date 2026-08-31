@@ -264,4 +264,4 @@ With Ollama (local, free):
 
 ## License
 
-Private project. Not licensed for redistribution.
+MIT License — see [LICENSE](LICENSE) for details. Free to use, modify, and distribute.

@@ -214,12 +214,13 @@ RULES:
         return text
 
     def health_check(self) -> bool:
-        """Verify NVIDIA API connectivity."""
+        """Verify NVIDIA API connectivity (quick test with short timeout)."""
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": "Reply with: OK"}],
                 max_tokens=10,
+                timeout=15,  # Short timeout for health check only
             )
             return bool(response.choices[0].message.content)
         except Exception as e:

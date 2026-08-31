@@ -343,8 +343,7 @@ def run_pipeline(
                     model=settings['nvidia']['model']
                 ))
             else:
-                console.print("  [yellow]✗[/yellow] NVIDIA [dim](skipping deep analysis)[/dim]")
-                skip_nvidia = True
+                console.print("  [yellow]⚠[/yellow] NVIDIA health check failed [dim](will still attempt on episodes)[/dim]")
 
         if sheets:
             status.update("[bold]Checking Google Sheets...")
